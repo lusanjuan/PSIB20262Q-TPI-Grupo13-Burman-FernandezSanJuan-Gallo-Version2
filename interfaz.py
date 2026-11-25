@@ -14,6 +14,7 @@ Se abre en el navegador. No reemplaza a los scripts: es una forma de ver el mét
 sobre una imagen por vez. El método en sí está en metodo.py.
 """
 
+import hashlib
 import io
 import os
 import warnings
@@ -38,6 +39,7 @@ COLOR_SEGMENTACION = (0, 230, 0)
 COLOR_MANUAL = (255, 215, 0)
 COLOR_MARCAS = (255, 60, 30)
 LADO_ENTRENAMIENTO = metodo.LADO  # la ventana elegida en el paso 5, con la que se entrenó el clasificador
+TOLERANCIA_ENTRENAMIENTO = int(metodo.TOLERANCIA)   # la tolerancia elegida en el paso 5
 
 NOMBRES_DESCRIPTORES = {
     "circularidad": "Circularidad", "alto/ancho": "Alto / ancho", "ecogenicidad": "Ecogenicidad",
@@ -47,9 +49,26 @@ NOMBRES_DESCRIPTORES = {
 
 # ---- Carga (con caché: se calcula una sola vez) -------------------------------
 
+def version_del_metodo():
+    """Huella de los archivos de los que depende el resultado. Se pasa a las
+    funciones con caché: si alguno cambia (por ejemplo, después de volver a correr
+    los pasos 5 y 6 y subirlos), la caché se descarta y se recalcula todo, en vez
+    de seguir mostrando el modelo viejo."""
+    huella = hashlib.md5()
+    for ruta in [metodo.RUTA_DESCRIPTORES, metodo.RUTA_PARAMETROS, metodo.RUTA_GRUPOS, metodo.__file__]:
+        if os.path.exists(ruta):
+            with open(ruta, "rb") as archivo:
+                huella.update(archivo.read())
+    return huella.hexdigest()
+
+
 @st.cache_resource(show_spinner="Entrenando el clasificador con los descriptores del paso 6...")
-def cargar_modelo():
+def entrenar_modelo(version):
     return metodo.entrenar()
+
+
+def cargar_modelo():
+    return entrenar_modelo(version_del_metodo())
 
 
 CARPETA_EJEMPLOS = "ejemplos"
@@ -88,9 +107,14 @@ def casos_busi():
 
 
 @st.cache_data(show_spinner="Limpiando, filtrando, segmentando y calculando descriptores...")
-def analizar(img, semilla, lado):
-    """Corre el método completo sobre una imagen, una semilla (fila, columna) y una ventana de `lado` px."""
-    return metodo.analizar(img, semilla, lado, cargar_modelo())
+def analizar_con_cache(img, semilla, lado, tolerancia, version):
+    return metodo.analizar(img, semilla, lado, cargar_modelo(), tolerancia)
+
+
+def analizar(img, semilla, lado, tolerancia):
+    """Corre el método completo sobre una imagen, una semilla (fila, columna), una ventana
+    de `lado` px y una tolerancia del region growing."""
+    return analizar_con_cache(img, semilla, lado, tolerancia, version_del_metodo())
 
 
 def toca_ventana(mascara, ventana):
@@ -230,6 +254,13 @@ with st.sidebar:
         help="La segmentación crece solo dentro de un cuadrado de este lado centrado en el clic. Si la lesión es "
              "más grande, queda cortada en línea recta: agrandá la ventana. Con ventanas grandes puede derramarse "
              f"al tejido de alrededor. El modelo se entrenó con {LADO_ENTRENAMIENTO} px.")
+    tolerancia = st.select_slider(
+        "Tolerancia (niveles de gris)", options=[15, 20, 25, 30, 35], value=TOLERANCIA_ENTRENAMIENTO,
+        help="Cuánto puede diferir el gris de un vecino del promedio de la región para sumarse. Más baja: la "
+             "región crece menos (sirve si se derrama al tejido de alrededor). Más alta: crece más (sirve si "
+             f"queda chica). El modelo se entrenó con {TOLERANCIA_ENTRENAMIENTO}.")
+    st.caption("Si el contorno **se derrama** fuera de la lesión: achicá la ventana o bajá la tolerancia. "
+               "Si queda **cortado en línea recta**: agrandá la ventana.")
 
     st.divider()
     st.caption(f"**Qué tan bien anda:** en {m['lesiones']} lesiones de BUSI (validación cruzada agrupada) detecta "
@@ -268,7 +299,7 @@ if semilla is None:
         st.info("Hacé clic dentro de la lesión (en la imagen de la izquierda) para ver la segmentación y la clasificación.")
     st.stop()
 
-resultado = analizar(img, semilla, lado)
+resultado = analizar(img, semilla, lado, tolerancia)
 mascara = resultado["mascara"]
 
 with col_resultado:
@@ -279,9 +310,10 @@ with col_resultado:
     if toca_ventana(mascara, resultado["ventana"]):
         st.warning(f"La segmentación llegó al borde de la ventana de {lado} px: si ves bordes rectos, la lesión "
                    "quedó cortada. Probá agrandar la ventana en la barra de la izquierda.")
-    if lado != LADO_ENTRENAMIENTO:
-        st.caption(f"Atención: ventana de {lado} px. El modelo se entrenó con {LADO_ENTRENAMIENTO} px, así que la "
-                   "probabilidad es menos confiable.")
+    if lado != LADO_ENTRENAMIENTO or tolerancia != TOLERANCIA_ENTRENAMIENTO:
+        st.caption(f"Atención: ventana de {lado} px y tolerancia {tolerancia}. El modelo se entrenó con "
+                   f"{LADO_ENTRENAMIENTO} px y tolerancia {TOLERANCIA_ENTRENAMIENTO}, así que la probabilidad "
+                   "es menos confiable.")
     p = resultado["probabilidad_maligna"]
     u = entrenado["umbral"]
     estilo = "maligna" if resultado["clase"] == "maligna" else "benigna"
@@ -351,19 +383,31 @@ with tab_lee:
                "mucho más (los bordes), conserva. Contorno rojo: la segmentación.")
 
 with tab_desc:
-    valores, ref = resultado["descriptores"], entrenado["referencia"]
+    valores, ref, aportes = resultado["descriptores"], entrenado["referencia"], resultado["aportes"]
     filas = []
     for clave, valor in valores.items():
-        b, m_ = ref["benign"][clave], ref["malignant"][clave]
+        aporte = aportes[clave]
+        if abs(aporte) < 0.1:
+            hacia = "casi nada"
+        else:
+            hacia = "maligna" if aporte > 0 else "benigna"
         filas.append({"Descriptor": NOMBRES_DESCRIPTORES.get(clave, clave), "Esta lesión": valor,
-                      "Mediana benignas": b, "Mediana malignas": m_,
-                      "Más parecido a": "benignas" if abs(valor - b) < abs(valor - m_) else "malignas"})
+                      "Mediana benignas": ref["benign"][clave], "Mediana malignas": ref["malignant"][clave],
+                      "Aporte": aporte, "Empuja hacia": hacia})
     tabla = pd.DataFrame(filas).set_index("Descriptor")
-    st.dataframe(tabla.style.format({"Esta lesión": "{:.3f}", "Mediana benignas": "{:.3f}", "Mediana malignas": "{:.3f}"}))
+    st.dataframe(tabla.style.format({"Esta lesión": "{:.3f}", "Mediana benignas": "{:.3f}",
+                                     "Mediana malignas": "{:.3f}", "Aporte": "{:+.2f}"}))
+    puntaje = resultado["constante"] + sum(aportes.values())
+    st.caption(f"Cómo decide: puntaje = constante ({resultado['constante']:+.2f}) + suma de los aportes "
+               f"({sum(aportes.values()):+.2f}) = **{puntaje:+.2f}**. Probabilidad de maligna = "
+               f"1 / (1 + e^(−puntaje)) = **{100 * resultado['probabilidad_maligna']:.0f} %**. "
+               "Cada aporte es el peso que el modelo le da al descriptor por cuánto se aleja esta lesión del "
+               "promedio (en desvíos): positivo empuja hacia maligna, negativo hacia benigna. Por eso no alcanza "
+               "con mirar a qué mediana se parece cada valor: un descriptor puede parecerse a las benignas y "
+               "pesar muy poco.")
     st.caption("Paso 6: 5 descriptores de forma (circularidad, alto/ancho), brillo (ecogenicidad), sombra posterior "
                "y textura (homogeneidad), medidos sobre la imagen limpia sin filtrar. Las medianas son de las "
-               "lesiones de BUSI segmentadas con este mismo método. El clasificador (regresión logística) usa los "
-               "5 juntos: un descriptor solo no decide.")
+               "lesiones de BUSI segmentadas con este mismo método.")
 
 with tab_como:
     st.markdown(f"""
@@ -372,7 +416,7 @@ with tab_como:
 2. **Filtro de Lee** (pasos 3 y 4): suaviza el speckle donde la imagen varía como el ruido y conserva los bordes.
    La varianza del ruido se midió en el paso 3 en parches de tejido homogéneo.
 3. **Segmentación** (paso 5): crecimiento de regiones desde el clic sobre la imagen con Lee, tolerancia
-   {metodo.TOLERANCIA} niveles de gris, dentro de una ventana de {metodo.LADO} px alrededor del clic, y refinamiento
+   {TOLERANCIA_ENTRENAMIENTO} niveles de gris, dentro de una ventana de {metodo.LADO} px alrededor del clic, y refinamiento
    morfológico. En BUSI da Dice de alrededor de 0,65 en promedio.
 4. **Descriptores y clasificación** (paso 6): 5 descriptores y una regresión logística entrenada con las lesiones de
    BUSI segmentadas de la misma forma. Con validación cruzada agrupada: AUC {m['auc']:.2f}, sensibilidad

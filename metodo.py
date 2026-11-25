@@ -118,10 +118,12 @@ def dice(a, b):
     return 1.0 if total == 0 else 2 * (a & b).sum() / total
 
 
-def analizar(img, semilla, lado, entrenado):
+def analizar(img, semilla, lado, entrenado, tolerancia=None):
     """Corre el método completo sobre una imagen en gris (0-255), un clic
-    (fila, columna) y una ventana de `lado` px. Devuelve un diccionario con
+    (fila, columna), una ventana de `lado` px y una tolerancia del region growing
+    (si no se indica, la que eligió el paso 5). Devuelve un diccionario con
     todos los pasos intermedios y el resultado."""
+    tolerancia = TOLERANCIA if tolerancia is None else tolerancia
     img = np.asarray(img, dtype=np.uint8)
     semilla = tuple(int(v) for v in semilla)
 
@@ -137,7 +139,7 @@ def analizar(img, semilla, lado, entrenado):
     ventana = ventana_alrededor(img.shape, semilla, lado)
     clic_ventana = (semilla[0] - ventana[0].start, semilla[1] - ventana[1].start)
     completa = np.zeros(img.shape, dtype=bool)
-    completa[ventana] = segmentar(METODO, con_lee[ventana], clic_ventana, TOLERANCIA)
+    completa[ventana] = segmentar(METODO, con_lee[ventana], clic_ventana, tolerancia)
     mascara = mancha_del_clic(completa, semilla)
 
     resultado = {
@@ -145,6 +147,7 @@ def analizar(img, semilla, lado, entrenado):
         "peso_k": peso_lee(limpia, var_ruido), "var_ruido": var_ruido,
         "mascara": mascara, "ventana": ventana,
         "clase": None, "probabilidad_maligna": None, "descriptores": None, "error": None,
+        "aportes": None, "constante": None, "tolerancia": tolerancia,
     }
     if not mascara.any():
         resultado["error"] = "No se pudo segmentar desde ese punto. Probá con un clic más adentro de la lesión."
@@ -159,6 +162,14 @@ def analizar(img, semilla, lado, entrenado):
     x = np.array([[valores[d] for d in DESCRIPTORES]])
     probabilidad = float(entrenado["modelo"].predict_proba(x)[0, 1])
     resultado["descriptores"] = {d: float(valores[d]) for d in DESCRIPTORES}
+    # Aporte de cada descriptor al puntaje de la regresión logística:
+    #   z = (valor − media) / desvío   (la estandarización del modelo)
+    #   aporte = coeficiente · z       (+ empuja hacia maligna, − hacia benigna)
+    #   puntaje = constante + suma de aportes;  probabilidad = 1 / (1 + e^(−puntaje))
+    escalador, regresion = entrenado["modelo"][0], entrenado["modelo"][-1]
+    z = (x[0] - escalador.mean_) / escalador.scale_
+    resultado["aportes"] = {d: float(c * zi) for d, c, zi in zip(DESCRIPTORES, regresion.coef_[0], z)}
+    resultado["constante"] = float(regresion.intercept_[0])
     resultado["probabilidad_maligna"] = probabilidad
     resultado["clase"] = "maligna" if probabilidad >= entrenado["umbral"] else "benigna"
     return resultado
