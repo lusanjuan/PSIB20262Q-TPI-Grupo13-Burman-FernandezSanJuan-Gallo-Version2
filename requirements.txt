@@ -1,0 +1,10 @@
+numpy
+pandas
+scipy
+matplotlib
+pillow
+scikit-image
+scikit-learn
+opencv-python-headless
+streamlit
+streamlit-image-coordinates
