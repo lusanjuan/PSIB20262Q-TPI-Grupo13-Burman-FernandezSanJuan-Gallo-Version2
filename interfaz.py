@@ -1,4 +1,4 @@
-"""Interfaz gráfica.
+"""Interfaz gráfica (objetivo opcional del anteproyecto).
 
 Permite cargar una ecografía, marcar la lesión con un clic (la semilla de la segmentación) y ver
 cada paso del método: las marcas del ecógrafo que se borraron (paso 2), el filtro de Lee
@@ -15,6 +15,7 @@ sobre una imagen por vez. El método en sí está en metodo.py.
 """
 
 import io
+import os
 import warnings
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -27,6 +28,7 @@ from PIL import Image, ImageDraw
 from scipy import ndimage
 from streamlit_image_coordinates import streamlit_image_coordinates
 
+import comun
 import metodo
 from comun import armar_tabla, agregar_grupos, cargar
 from filtros import USAR_RUIDO_PASO3
@@ -50,22 +52,39 @@ def cargar_modelo():
     return metodo.entrenar()
 
 
+CARPETA_EJEMPLOS = "ejemplos"
+
+
 @st.cache_data
 def casos_busi():
     """Casos con lesión de BUSI (data/raw), sin las imágenes con etiqueta contradictoria
-    del paso 1. Si el dataset no está, devuelve None (solo se puede subir una imagen)."""
+    del paso 1. Si el dataset no está (por ejemplo, en la versión publicada en internet),
+    usa la carpeta ejemplos/ si existe, con la misma estructura (ejemplos/benign/,
+    ejemplos/malignant/, con sus máscaras). Si tampoco está, devuelve None y solo se
+    puede subir una imagen. Devuelve (casos, son_ejemplos)."""
+    son_ejemplos = False
     try:
         casos = armar_tabla()
     except Exception:
-        return None
+        casos = pd.DataFrame()
+    if casos.empty and os.path.isdir(CARPETA_EJEMPLOS):
+        carpeta_original = comun.CARPETA_DATOS
+        comun.CARPETA_DATOS = CARPETA_EJEMPLOS
+        try:
+            casos, son_ejemplos = armar_tabla(), True
+        except Exception:
+            casos = pd.DataFrame()
+        finally:
+            comun.CARPETA_DATOS = carpeta_original
     if casos.empty:
-        return None
-    try:
-        casos = agregar_grupos(casos)
-    except FileNotFoundError:
-        pass   # sin el paso 1 se muestran todas
+        return None, False
+    if not son_ejemplos:
+        try:
+            casos = agregar_grupos(casos)
+        except FileNotFoundError:
+            pass   # sin el paso 1 se muestran todas
     casos = casos[casos["clase"] != "normal"]
-    return None if casos.empty else casos.set_index("id")
+    return (None, False) if casos.empty else (casos.set_index("id"), son_ejemplos)
 
 
 @st.cache_data(show_spinner="Limpiando, filtrando, segmentando y calculando descriptores...")
@@ -163,7 +182,7 @@ try:
 except FileNotFoundError as error:
     st.error(str(error))
     st.stop()
-casos = casos_busi()
+casos, son_ejemplos = casos_busi()
 m = entrenado["metricas"]
 
 # 1. Elegir la imagen
@@ -182,6 +201,9 @@ with st.sidebar:
         if st.button("Otra imagen al azar", width="stretch"):
             st.session_state["id_caso"] = str(np.random.choice(ids))
         id_caso = st.selectbox(f"Imagen ({len(ids)} {clase.lower()})", ids, key="id_caso")
+        if son_ejemplos:
+            st.caption("Versión en línea: imágenes de ejemplo de BUSI (el dataset completo no está en GitHub). "
+                       "También podés subir una imagen propia.")
         fila = casos.loc[id_caso].copy()
         fila["id"] = id_caso
         img, mascara_manual = cargar(fila)

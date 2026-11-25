@@ -50,8 +50,10 @@ def entrenar():
     - El modelo final se entrena con todas las imágenes.
     Devuelve un diccionario con el modelo, el umbral, las métricas y las
     medianas de cada descriptor por clase (para comparar en la interfaz)."""
-    if not os.path.exists(RUTA_DESCRIPTORES):
-        raise FileNotFoundError(f"No existe {RUTA_DESCRIPTORES}: corré primero los pasos 1 a 6.")
+    for ruta in [RUTA_DESCRIPTORES, RUTA_GRUPOS]:
+        if not os.path.exists(ruta):
+            raise FileNotFoundError(f"No existe {ruta}. En tu compu: corré los pasos 1 a 6. En la versión "
+                                    "publicada: subí ese archivo a GitHub con git add -f (ver requirements.txt).")
     tabla = pd.read_csv(RUTA_DESCRIPTORES)
     columnas = ["B " + d for d in DESCRIPTORES]
     tabla = tabla.dropna(subset=columnas).reset_index(drop=True)
