@@ -1,12 +1,34 @@
 # paso2_marcas.py
 # Detectar y borrar las marcas del ecógrafo (cruces de medición, líneas
-# punteadas, números y textos) que vimos en el paso 1.
+# punteadas, números y textos) que vimos en el paso 1, y guardar las imágenes
+# limpias para que los pasos siguientes no tengan que volver a calcularlas.
 # Se corre desde la carpeta del proyecto:  python3 paso2_marcas.py
 # Imprime los resultados en la terminal y guarda las figuras en outputs/paso2_marcas/.
+#
+# Necesita haber corrido el paso 1 (usa grupos_repetidas.csv para sacar las
+# 19 imágenes con etiqueta contradictoria: trabaja con 761).
+#
+# Lo lento es rellenar las 761 imágenes. Se hace UNA vez (bloque 0) y queda
+# guardado: las imágenes limpias en outputs/paso2_marcas/imagenes_limpias/ y lo
+# medido en marcas_por_imagen.csv. Las corridas siguientes leen eso.
+# Para rehacerlo (por ejemplo, si cambia algún parámetro de marcas.py), poner
+# RECALCULAR = True.
+#
+# Figuras:
+#   01_perfil_y_tophat.png        perfil de grises y top-hat sobre una cruz real
+#   02a_tophat_tejido.png         histograma del top-hat en el tejido, con el umbral
+#   02b_pasos_deteccion.png       los pasos de la detección sobre un ejemplo
+#   03_relleno_ejemplos.png       original, marcas, Telea y biharmónico en 3 ejemplos
+#   04a_deteccion_por_brillo.png  % de cruces sintéticas detectadas según el tejido
+#   04b_psnr_telea_vs_bih.png     PSNR de los dos métodos en cada cruz sintética
+#   04c_ejemplo_cruz.png          una cruz sintética: original, con cruz, rellenos y error
+#   05a_pct_marcas.png            % de la imagen ocupado por marcas, por clase
+#   05b_antes_despues.png         las imágenes con más marcas, antes y después
 
 import os
 
 import numpy as np
+import pandas as pd
 import matplotlib
 matplotlib.use("Agg")  # no abrir ventanas: solo guardar archivos
 import matplotlib.pyplot as plt
@@ -15,14 +37,20 @@ from skimage.morphology import disk, opening, dilation
 from skimage.restoration import inpaint_biharmonic
 from scipy.stats import wilcoxon
 
-from comun import CLASES, armar_tabla, cargar
+from comun import CLASES, armar_tabla, cargar, agregar_grupos, ruta_limpia, guardar_limpia, cargar_limpia
 import marcas
-from marcas import detectar_marcas, limpiar
+from marcas import detectar_marcas, rellenar
 
 CARPETA_SALIDA = "outputs/paso2_marcas"
 os.makedirs(CARPETA_SALIDA, exist_ok=True)
 
-df = armar_tabla()
+RECALCULAR = False   # True: vuelve a detectar, rellenar y guardar las 761 imágenes
+RUTA_TABLA = os.path.join(CARPETA_SALIDA, "marcas_por_imagen.csv")
+RUTA_HIST = os.path.join(CARPETA_SALIDA, "histograma_tophat_tejido.npy")
+
+df = agregar_grupos(armar_tabla())   # 761 imágenes (sin las de etiqueta contradictoria)
+
+COLORES = {"benign": "#2a78b5", "malignant": "#c8553d", "normal": "#8c8c8c"}
 
 
 def titulo(texto):
@@ -48,6 +76,14 @@ def formato_p(p):
     return "p = " + numero(p, 3)
 
 
+def guardar_figura(nombre, dpi=120):
+    """Guarda la figura actual en la carpeta de salida, la cierra e imprime la ruta."""
+    ruta = os.path.join(CARPETA_SALIDA, nombre)
+    plt.savefig(ruta, dpi=dpi)
+    plt.close()
+    print(f"Figura guardada en {ruta}")
+
+
 def tophat_blanco(img):
     """Top-hat blanco = imagen − apertura con un disco de radio 3 (ver marcas.py)."""
     return img.astype(int) - opening(img, disk(marcas.RADIO_DISCO)).astype(int)
@@ -66,6 +102,57 @@ def rellenar_biharmonico(img, mascara):
 
 def fila_por_id(id_imagen):
     return df[df["id"] == id_imagen].iloc[0]
+
+
+def rojo_encima(eje, mascara, color=(1, 0, 0)):
+    """Pinta la máscara de un color, opaco, encima de lo que ya hay en el eje."""
+    capa = np.zeros(mascara.shape + (4,))
+    capa[mascara] = list(color) + [1]
+    eje.imshow(capa)
+
+
+# ---------------------------------------------------------------------------
+# BLOQUE 0. Recorrido de las 761 imágenes (se hace una sola vez).
+# Para cada imagen, en una sola pasada:
+#   - detecta las marcas (una vez, y se reusa para todo lo demás);
+#   - para el bloque 1: si tiene tejido >= 250 fuera de las marcas;
+#   - para el bloque 2: suma el histograma del top-hat en el tejido sin marcas
+#     (sin el fondo negro, valor 0, que tiene top-hat 0);
+#   - para el bloque 5: qué % de la imagen ocupan las marcas;
+#   - rellena las marcas con el método de marcas.py y guarda la imagen limpia.
+# ---------------------------------------------------------------------------
+titulo(f"BLOQUE 0. Detección, relleno y guardado de las {len(df)} imágenes")
+
+todas_guardadas = all(os.path.exists(ruta_limpia(fila)) for _, fila in df.iterrows())
+if not RECALCULAR and todas_guardadas and os.path.exists(RUTA_TABLA) and os.path.exists(RUTA_HIST):
+    tabla = pd.read_csv(RUTA_TABLA)
+    hist_tejido = np.load(RUTA_HIST)
+    print(f"Leído de {RUTA_TABLA} y de las imágenes limpias ya guardadas (no se recalcula).")
+else:
+    print(f"Método de relleno: {marcas.METODO}. Tarda varios minutos (solo la primera vez).")
+    filas_tabla = []
+    hist_tejido = np.zeros(256)
+    for k, (_, fila) in enumerate(df.iterrows(), start=1):
+        img, _ = cargar(fila)
+        mascara = detectar_marcas(img)
+        th = tophat_blanco(img)
+        tejido = ~dilation(mascara, disk(2)) & (img > 0)
+        hist_tejido += np.bincount(th[tejido], minlength=256)
+        guardar_limpia(fila, rellenar(img, mascara))
+        filas_tabla.append({
+            "id": fila["id"], "clase": fila["clase"],
+            "pct_marcas": 100 * mascara.mean(),
+            "tejido_250": bool(((img >= 250) & ~mascara).any()),
+        })
+        if k % 100 == 0:
+            print(f"  {k} de {len(df)}", flush=True)
+    tabla = pd.DataFrame(filas_tabla)
+    tabla.to_csv(RUTA_TABLA, index=False)
+    np.save(RUTA_HIST, hist_tejido)
+    print(f"Imágenes limpias guardadas en outputs/paso2_marcas/imagenes_limpias/")
+    print(f"Tabla guardada en {RUTA_TABLA}")
+
+df = df.merge(tabla[["id", "pct_marcas", "tejido_250"]], on="id")
 
 
 # ---------------------------------------------------------------------------
@@ -88,13 +175,7 @@ print("  gris:    " + " ".join(f"{v:4d}" for v in img12[FILA, X_INICIO:X_FIN]))
 print("  -> La marca vale ~215–231 (no 255) y el tejido de al lado ~70–130.")
 print("     Entre medio hay un borde suave (~155) que también es parte de la marca.")
 
-imagenes_con_250 = 0
-for _, fila in df.iterrows():
-    img, _ = cargar(fila)
-    tejido = ~detectar_marcas(img)
-    if ((img >= 250) & tejido).any():
-        imagenes_con_250 += 1
-print(f"\nImágenes con tejido >= 250 (fuera de las marcas): {imagenes_con_250} de {len(df)}")
+print(f"\nImágenes con tejido >= 250 (fuera de las marcas): {df['tejido_250'].sum()} de {len(df)}")
 print("  -> Un umbral de brillo marcaría tejido como marca y no vería las marcas de ~220.")
 
 
@@ -106,8 +187,13 @@ print("  -> Un umbral de brillo marcaría tejido como marca y no vería las marc
 # tan angosto (3 px). La explicación con números en 1D está en marcas.py.
 # Para justificar el umbral 100 imprimimos:
 #   - el top-hat sobre la cruz del perfil anterior;
-#   - el percentil 99,9 del top-hat en el tejido sin marcas de las 780 imágenes
-#     (sin contar el fondo negro, valor 0, que tiene top-hat 0).
+#   - el percentil 99,9 del top-hat en el tejido sin marcas de las 761 imágenes.
+# Figuras:
+#   01:  el perfil de grises y el top-hat de la misma fila, con el umbral.
+#   02a: histograma del top-hat en el tejido (escala log), con el umbral.
+#   02b: los pasos de la detección sobre "malignant (12)": original, top-hat,
+#        candidatos (top-hat >= 100), marcas (rojo) y fibras descartadas
+#        (celeste), y la máscara final agrandada.
 # ---------------------------------------------------------------------------
 titulo("BLOQUE 2. Detección con top-hat blanco")
 
@@ -116,20 +202,67 @@ print(f'Top-hat en la misma fila de "malignant (12)":')
 print("  columna: " + " ".join(f"{x:4d}" for x in range(X_INICIO, X_FIN)))
 print("  top-hat: " + " ".join(f"{v:4d}" for v in th12[FILA, X_INICIO:X_FIN]))
 
-# Histograma acumulado del top-hat (0 a 255) en el tejido de todas las imágenes
-hist_tejido = np.zeros(256)
-for _, fila in df.iterrows():
-    img, _ = cargar(fila)
-    th = tophat_blanco(img)
-    tejido = ~dilation(detectar_marcas(img), disk(2)) & (img > 0)
-    hist_tejido += np.bincount(th[tejido], minlength=256)
 acumulado = np.cumsum(hist_tejido) / hist_tejido.sum()
 p999 = np.searchsorted(acumulado, 0.999)
-print(f"\nPercentil 99,9 del top-hat en el tejido sin marcas (780 imágenes): {p999}")
+print(f"\nPercentil 99,9 del top-hat en el tejido sin marcas ({len(df)} imágenes): {p999}")
 print(f"Píxeles de tejido con top-hat >= {marcas.UMBRAL_TOPHAT}: "
       f"{numero(100 * (1 - acumulado[marcas.UMBRAL_TOPHAT - 1]), 3)} %")
 print(f"  -> Umbral = {marcas.UMBRAL_TOPHAT}: por encima de casi todo el tejido y por debajo de las marcas.")
 print("     Lo poco de tejido que pasa el umbral son fibras finas, que se descartan por forma.")
+
+# 01: perfil de grises y top-hat
+columnas = np.arange(X_INICIO, X_FIN)
+fig, ejes = plt.subplots(1, 2, figsize=(13, 4))
+ejes[0].plot(columnas, img12[FILA, X_INICIO:X_FIN], "o-", color="black")
+ejes[0].axhline(255, color="gray", linestyle=":", label="255 (blanco puro)")
+ejes[0].set_title(f"Gris en la fila {FILA}: la marca vale ~220, no 255")
+ejes[0].set_ylabel("Nivel de gris")
+ejes[0].set_ylim(0, 265)
+ejes[1].plot(columnas, th12[FILA, X_INICIO:X_FIN], "o-", color="tab:red")
+ejes[1].axhline(marcas.UMBRAL_TOPHAT, color="tab:red", linestyle="--", label=f"umbral = {marcas.UMBRAL_TOPHAT}")
+ejes[1].set_title("Top-hat en la misma fila: solo la marca sobresale")
+ejes[1].set_ylabel("Top-hat (cuánto sobresale de su entorno)")
+ejes[1].set_ylim(0, 265)
+for eje in ejes:
+    eje.set_xlabel("Columna (píxel)")
+    eje.legend()
+    eje.spines[["top", "right"]].set_visible(False)
+plt.suptitle('"malignant (12)": perfil que cruza el brazo vertical de una cruz de medición')
+plt.tight_layout()
+guardar_figura("01_perfil_y_tophat.png")
+
+# 02a: histograma del top-hat en el tejido
+fig, eje = plt.subplots(figsize=(9, 4.5))
+eje.bar(np.arange(256), hist_tejido / hist_tejido.sum(), width=1, color="#5a5a5a")
+eje.axvline(marcas.UMBRAL_TOPHAT, color="tab:red", linestyle="--", label=f"umbral = {marcas.UMBRAL_TOPHAT}")
+eje.axvline(p999, color="tab:blue", linestyle=":", label=f"percentil 99,9 = {p999}")
+eje.set_yscale("log")
+eje.set_xlabel("Top-hat")
+eje.set_ylabel("Proporción de píxeles de tejido (escala log)")
+eje.set_title(f"Top-hat en el tejido sin marcas ({len(df)} imágenes): casi nada llega al umbral")
+eje.legend()
+eje.spines[["top", "right"]].set_visible(False)
+plt.tight_layout()
+guardar_figura("02a_tophat_tejido.png")
+
+# 02b: pasos de la detección
+marcas12, fibras12 = detectar_marcas(img12, devolver_fibras=True)
+fig, ejes = plt.subplots(1, 4, figsize=(20, 5))
+ejes[0].imshow(img12, cmap="gray", vmin=0, vmax=255)
+ejes[0].set_title("1. Original")
+ejes[1].imshow(th12, cmap="magma", vmin=0, vmax=200)
+ejes[1].set_title("2. Top-hat (claro = sobresale de su entorno)")
+ejes[2].imshow(img12, cmap="gray", vmin=0, vmax=255)
+rojo_encima(ejes[2], th12 >= marcas.UMBRAL_TOPHAT, (1, 1, 0))
+ejes[2].set_title(f"3. Candidatos: top-hat >= {marcas.UMBRAL_TOPHAT} (amarillo)")
+ejes[3].imshow(img12, cmap="gray", vmin=0, vmax=255)
+rojo_encima(ejes[3], marcas12)
+rojo_encima(ejes[3], fibras12, (0, 0.8, 1))
+ejes[3].set_title(f"4. Marcas finales (rojo, agrandadas {marcas.AGRANDAR} px)\ny fibras descartadas (celeste)")
+for eje in ejes:
+    eje.axis("off")
+plt.tight_layout()
+guardar_figura("02b_pasos_deteccion.png", dpi=100)
 
 
 # ---------------------------------------------------------------------------
@@ -158,17 +291,12 @@ for i, id_imagen in enumerate(ejemplos):
     for j, (imagen, nombre) in enumerate(paneles):
         ejes[i, j].imshow(imagen, cmap="gray", vmin=0, vmax=255)
         if j == 1:
-            rojo = np.zeros(img.shape + (4,))
-            rojo[mascara] = [1, 0, 0, 1]
-            ejes[i, j].imshow(rojo)
+            rojo_encima(ejes[i, j], mascara)
         ejes[i, j].set_title(f"{id_imagen} – {nombre}", fontsize=10)
         ejes[i, j].axis("off")
     print(f"  {id_imagen}: las marcas ocupan {numero(100 * mascara.mean(), 2)} % de la imagen")
 plt.tight_layout()
-ruta_figura = os.path.join(CARPETA_SALIDA, "03_relleno_ejemplos.png")
-plt.savefig(ruta_figura, dpi=100)
-plt.close()
-print(f"Figura guardada en {ruta_figura}")
+guardar_figura("03_relleno_ejemplos.png", dpi=100)
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +314,10 @@ print(f"Figura guardada en {ruta_figura}")
 #    PSNR = 10·log10(255² / MSE), con el MSE calculado solo dentro de la cruz.
 #    Más alto = el relleno se parece más a lo que había.
 #    Comparamos Telea vs. biharmónico con Wilcoxon pareado (mismas cruces).
+# Figuras extra:
+#   04b: PSNR de Telea contra PSNR de biharmónico, un punto por cruz. Los puntos
+#        por encima de la diagonal son cruces donde ganó el biharmónico.
+#   04c: una cruz de ejemplo: original, con cruz, los dos rellenos y su error.
 # ---------------------------------------------------------------------------
 titulo("BLOQUE 4. Validación con 600 cruces sintéticas")
 
@@ -205,6 +337,7 @@ cruz[c - GROSOR:c + GROSOR + 1, c - MEDIO:c + MEDIO + 1] = True   # brazo horizo
 rng = np.random.default_rng(0)
 cache = {}   # para no recalcular imagen, lesión y marcas de la misma imagen
 brillo, detectada, psnr_telea, psnr_bih = [], [], [], []
+ejemplo_cruz = None
 
 while len(brillo) < N_CRUCES:
     i = rng.integers(len(df))
@@ -233,10 +366,17 @@ while len(brillo) < N_CRUCES:
     brillo.append(original[cruz].mean())
 
     # b) Relleno con la máscara verdadera
-    for metodo, lista in [(rellenar_telea, psnr_telea), (rellenar_biharmonico, psnr_bih)]:
+    rellenos = {}
+    for nombre, metodo, lista in [("Telea", rellenar_telea, psnr_telea),
+                                  ("biharmónico", rellenar_biharmonico, psnr_bih)]:
         relleno = metodo(con_cruz, cruz)
+        rellenos[nombre] = relleno
         mse = np.mean((relleno[cruz].astype(float) - original[cruz].astype(float)) ** 2)
         lista.append(10 * np.log10(255 ** 2 / max(mse, 1e-10)))
+
+    # Guardamos la primera cruz sobre tejido de brillo intermedio como ejemplo
+    if ejemplo_cruz is None and 80 <= original[cruz].mean() <= 140:
+        ejemplo_cruz = (df.iloc[i]["id"], original, con_cruz, detectado, rellenos)
 
 brillo = np.array(brillo)
 detectada = np.array(detectada)
@@ -269,10 +409,7 @@ eje.set_xlabel("Brillo medio del tejido debajo de la cruz (nivel de gris)")
 eje.set_ylabel("% de cruces detectadas completas")
 eje.set_title(f"Detección de cruces sintéticas (valor {VALOR}) según el tejido de abajo")
 plt.tight_layout()
-ruta_figura = os.path.join(CARPETA_SALIDA, "04a_deteccion_por_brillo.png")
-plt.savefig(ruta_figura, dpi=120)
-plt.close()
-print(f"   Figura guardada en {ruta_figura}")
+guardar_figura("04a_deteccion_por_brillo.png")
 
 # b) Relleno: PSNR
 estadistico, p = wilcoxon(psnr_telea, psnr_bih)
@@ -287,27 +424,101 @@ print(f"   W = {numero(estadistico, 1)}   {formato_p(p)}")
 ganador = "biharmonico" if np.median(psnr_bih) > np.median(psnr_telea) else "telea"
 print(f"\n   Método ganador: {ganador}")
 if ganador != marcas.METODO:
-    print(f"   ATENCIÓN: marcas.py usa METODO = \"{marcas.METODO}\". Cambiarlo a \"{ganador}\".")
+    print(f"   ATENCIÓN: marcas.py usa METODO = \"{marcas.METODO}\". Cambiarlo a \"{ganador}\"")
+    print("   y volver a correr este script con RECALCULAR = True.")
+
+# 04b: PSNR de los dos métodos, cruz por cruz
+fig, eje = plt.subplots(figsize=(6, 6))
+eje.scatter(psnr_telea, psnr_bih, s=10, alpha=0.5, color="#2a78b5", edgecolors="none")
+limites = [min(psnr_telea.min(), psnr_bih.min()) - 1, max(psnr_telea.max(), psnr_bih.max()) + 1]
+eje.plot(limites, limites, "k--", linewidth=1, label="iguales")
+eje.set_xlim(limites)
+eje.set_ylim(limites)
+eje.set_aspect("equal")
+eje.set_xlabel("PSNR Telea (dB)")
+eje.set_ylabel("PSNR biharmónico (dB)")
+eje.set_title(f"Arriba de la diagonal gana el biharmónico\n"
+              f"({(psnr_bih > psnr_telea).sum()} de {len(psnr_telea)} cruces, Wilcoxon {formato_p(p)})")
+eje.legend(loc="lower right")
+eje.spines[["top", "right"]].set_visible(False)
+plt.tight_layout()
+guardar_figura("04b_psnr_telea_vs_bih.png")
+
+# 04c: una cruz de ejemplo
+if ejemplo_cruz is not None:
+    id_ej, original, con_cruz, detectado, rellenos = ejemplo_cruz
+    fig, ejes = plt.subplots(2, 4, figsize=(16, 8.5))
+    paneles = [(original, "original (lo que había)"), (con_cruz, f"con la cruz ({VALOR})")]
+    for j, (imagen, nombre) in enumerate(paneles):
+        ejes[0, j].imshow(imagen, cmap="gray", vmin=0, vmax=255)
+        ejes[0, j].set_title(nombre)
+    ejes[0, 2].imshow(con_cruz, cmap="gray", vmin=0, vmax=255)
+    rojo_encima(ejes[0, 2], detectado)
+    ejes[0, 2].set_title("detectado (rojo)")
+    ejes[0, 3].axis("off")
+    for j, nombre in enumerate(["Telea", "biharmónico"]):
+        relleno = rellenos[nombre]
+        error = np.abs(relleno.astype(int) - original.astype(int))
+        mse = np.mean(error[cruz].astype(float) ** 2)
+        ejes[1, 2 * j].imshow(relleno, cmap="gray", vmin=0, vmax=255)
+        ejes[1, 2 * j].set_title(f"relleno {nombre}")
+        ejes[1, 2 * j + 1].imshow(error, cmap="magma", vmin=0, vmax=60)
+        ejes[1, 2 * j + 1].set_title(f"|error| {nombre}: PSNR = {numero(10 * np.log10(255 ** 2 / max(mse, 1e-10)), 1)} dB")
+    for eje in ejes.ravel():
+        eje.set_xticks([])
+        eje.set_yticks([])
+    plt.suptitle(f"Cruz sintética sobre {id_ej} (recorte de {2 * R_RECORTE + 1} × {2 * R_RECORTE + 1} px; "
+                 f"error: negro = 0, claro = 60 o más)")
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    guardar_figura("04c_ejemplo_cruz.png")
 
 
 # ---------------------------------------------------------------------------
-# BLOQUE 5. Aplicar limpiar(img) a las 780 imágenes.
-# limpiar (en marcas.py) detecta las marcas y las rellena con el método ganador.
-# Imprimimos qué porcentaje de cada imagen ocupan las marcas (mediana).
+# BLOQUE 5. Resultado sobre las 761 imágenes.
+# Las imágenes ya se limpiaron y guardaron en el bloque 0, con el método de
+# marcas.py. Acá se resume cuánto de cada imagen ocupaban las marcas.
+# Figuras:
+#   05a: % de la imagen ocupado por marcas, por clase.
+#   05b: las 4 imágenes con más marcas, antes y después de limpiarlas.
 # ---------------------------------------------------------------------------
-titulo("BLOQUE 5. limpiar() sobre las 780 imágenes")
+titulo(f"BLOQUE 5. Marcas en las {len(df)} imágenes")
 
-porcentaje_marcas = []
-for _, fila in df.iterrows():
-    img, _ = cargar(fila)
-    imagen_limpia, mascara = limpiar(img)
-    porcentaje_marcas.append(100 * mascara.mean())
-df["pct_marcas"] = porcentaje_marcas
-
-print(f"Método usado por limpiar(): {marcas.METODO}")
+print(f"Método usado: {marcas.METODO}")
+print(f"Imágenes sin ninguna marca detectada: {(df['pct_marcas'] == 0).sum()} de {len(df)}")
 print(f"Mediana del % de la imagen ocupado por marcas: {numero(df['pct_marcas'].median(), 2)} %")
 for clase in CLASES:
     print(f"  {clase:10s} {numero(df.loc[df['clase'] == clase, 'pct_marcas'].median(), 2)} %")
+
+# 05a: % de marcas por clase
+rng_puntos = np.random.default_rng(0)
+fig, eje = plt.subplots(figsize=(7, 5))
+valores = [df.loc[df["clase"] == c, "pct_marcas"].to_numpy() for c in CLASES]
+eje.boxplot(valores, widths=0.5, showfliers=False, medianprops={"color": "black", "linewidth": 2})
+for k, (clase, v) in enumerate(zip(CLASES, valores), start=1):
+    eje.scatter(k + rng_puntos.uniform(-0.18, 0.18, len(v)), v, s=8, alpha=0.45,
+                color=COLORES[clase], edgecolors="none")
+eje.set_xticks(range(1, len(CLASES) + 1), [f"{c}\n(n = {len(v)})" for c, v in zip(CLASES, valores)])
+eje.set_ylabel("% de la imagen ocupado por marcas")
+eje.set_title("Cuánto de cada imagen se rellenó")
+eje.spines[["top", "right"]].set_visible(False)
+plt.tight_layout()
+guardar_figura("05a_pct_marcas.png")
+
+# 05b: antes y después en las imágenes con más marcas
+con_mas = df.sort_values("pct_marcas", ascending=False).head(4)
+fig, ejes = plt.subplots(2, 4, figsize=(18, 9))
+for j, (_, fila) in enumerate(con_mas.iterrows()):
+    antes, _ = cargar(fila)
+    despues, _ = cargar_limpia(fila)
+    ejes[0, j].imshow(antes, cmap="gray", vmin=0, vmax=255)
+    ejes[0, j].set_title(f"{fila['id']}: antes ({numero(fila['pct_marcas'], 1)} % marcas)", fontsize=10)
+    ejes[1, j].imshow(despues, cmap="gray", vmin=0, vmax=255)
+    ejes[1, j].set_title(f"{fila['id']}: después", fontsize=10)
+for eje in ejes.ravel():
+    eje.axis("off")
+plt.suptitle("Las 4 imágenes con más marcas, antes (arriba) y después (abajo) de limpiarlas")
+plt.tight_layout()
+guardar_figura("05b_antes_despues.png", dpi=100)
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +532,7 @@ print(f"- Método elegido: {ganador}, porque su PSNR mediano es mayor "
 print(f"- Detección de cruces sintéticas: {numero(100 * detectada.mean(), 1)} % completas.")
 print(f"- PSNR mediano: Telea {numero(np.median(psnr_telea), 2)} dB, "
       f"biharmónico {numero(np.median(psnr_bih), 2)} dB.")
+print(f"- Imágenes limpias guardadas: {len(df)} (los pasos siguientes las leen con cargar_limpia).")
 print("- Limitaciones:")
 print("  * Marcas sobre tejido muy brillante: sobresalen menos de 100 y no se detectan.")
 print("  * Marcas pegadas a fibras: se unen en un solo objeto largo y horizontal,")

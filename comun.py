@@ -1,6 +1,7 @@
 # comun.py
-# Cosas que usan varios pasos: la tabla de imágenes y la función para cargarlas.
-# Se importa así:  from comun import armar_tabla, cargar
+# Cosas que usan varios pasos: la tabla de imágenes, la función para cargarlas,
+# los grupos de imágenes repetidas (paso 1) y las imágenes limpias (paso 2).
+# Se importa así:  from comun import armar_tabla, cargar, agregar_grupos, cargar_limpia
 
 import os
 import glob
@@ -59,6 +60,9 @@ def cargar(fila):
     return imagen, mascara
 
 
+# ---------------------------------------------------------------------------
+# Imágenes repetidas (las encuentra el paso 1, bloque 10).
+# ---------------------------------------------------------------------------
 RUTA_GRUPOS = "outputs/paso1_exploracion/grupos_repetidas.csv"
 
 
@@ -75,3 +79,31 @@ def agregar_grupos(df):
         raise ValueError("Hay imágenes sin grupo: volvé a correr paso1_exploracion.py")
     df = df[~df["excluir"].astype(bool)].drop(columns="excluir")
     return df.rename(columns={"grupo_repetidas": "grupo"}).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Imágenes limpias (sin marcas del ecógrafo). Las calcula y guarda el paso 2
+# una sola vez; los pasos siguientes las leen con cargar_limpia(fila), que
+# devuelve lo mismo que cargar(fila) pero con la imagen ya limpia.
+# Se guardan en PNG, que no pierde información.
+# ---------------------------------------------------------------------------
+CARPETA_LIMPIAS = "outputs/paso2_marcas/imagenes_limpias"
+
+
+def ruta_limpia(fila):
+    return os.path.join(CARPETA_LIMPIAS, fila["clase"], fila["id"] + ".png")
+
+
+def guardar_limpia(fila, imagen):
+    ruta = ruta_limpia(fila)
+    os.makedirs(os.path.dirname(ruta), exist_ok=True)
+    Image.fromarray(imagen).save(ruta)
+
+
+def cargar_limpia(fila):
+    ruta = ruta_limpia(fila)
+    if not os.path.exists(ruta):
+        raise FileNotFoundError(f"No existe {ruta}: corré primero paso2_marcas.py")
+    _, mascara = cargar(fila)
+    imagen = np.array(Image.open(ruta).convert("L"))
+    return imagen, mascara

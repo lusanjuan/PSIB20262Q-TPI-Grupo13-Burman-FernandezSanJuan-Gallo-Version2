@@ -1,7 +1,7 @@
 # marcas.py
 # Funciones para detectar y borrar las marcas del ecógrafo
 # (cruces de medición, líneas punteadas, números y textos).
-# Se importa así:  from marcas import detectar_marcas, limpiar
+# Se importa así:  from marcas import detectar_marcas, rellenar, limpiar
 
 import numpy as np
 import cv2
@@ -46,14 +46,16 @@ METODO = "biharmonico"   # método de relleno que ganó en paso2_marcas.py (bloq
 #   - se descartan las fibras del tejido (claras y finas, pero largas y casi
 #     horizontales): elongación >= 3, largo >= 8 px e inclinación <= 35°;
 #   - se agranda la máscara 2 px para tapar el borde suave de la marca.
+# Con devolver_fibras=True devuelve también las fibras descartadas (para las
+# figuras del paso 2).
 # ---------------------------------------------------------------------------
-def detectar_marcas(img):
+def detectar_marcas(img, devolver_fibras=False):
     apertura = opening(img, disk(RADIO_DISCO))
     tophat = img.astype(int) - apertura.astype(int)
     candidatos = tophat >= UMBRAL_TOPHAT
 
-    marcas = np.zeros(img.shape, dtype=bool)
     etiquetas = label(candidatos)
+    son_marca, son_fibra = [], []
     for objeto in regionprops(etiquetas):
         largo = objeto.axis_major_length
         ancho = max(objeto.axis_minor_length, 1)
@@ -62,23 +64,29 @@ def detectar_marcas(img):
         inclinacion = 90 - abs(np.degrees(objeto.orientation))
         es_fibra = (elongacion >= FIBRA_ELONGACION and largo >= FIBRA_LARGO
                     and inclinacion <= FIBRA_INCLINACION)
-        if not es_fibra:
-            marcas[etiquetas == objeto.label] = True
+        (son_fibra if es_fibra else son_marca).append(objeto.label)
 
-    marcas = dilation(marcas, disk(AGRANDAR))
+    # np.isin marca todos los objetos de una vez (más rápido que uno por uno)
+    marcas = dilation(np.isin(etiquetas, son_marca), disk(AGRANDAR))
+    if devolver_fibras:
+        return marcas, np.isin(etiquetas, son_fibra)
     return marcas
 
 
 # ---------------------------------------------------------------------------
-# limpiar(img): detecta las marcas y las rellena con el método que ganó
-# la validación del paso 2 (bloque 4).
-# Devuelve (imagen_limpia, mascara_de_marcas).
+# rellenar(img, mascara): rellena los píxeles de la máscara con el método que
+# ganó la validación del paso 2 (bloque 4).
+# limpiar(img): detecta las marcas y las rellena. Devuelve (imagen_limpia, mascara).
 # ---------------------------------------------------------------------------
+def rellenar(img, mascara):
+    if not mascara.any():
+        return img.copy()
+    if METODO == "telea":
+        return cv2.inpaint(img, mascara.astype(np.uint8), 5, cv2.INPAINT_TELEA)
+    relleno = inpaint_biharmonic(img / 255.0, mascara)
+    return np.clip(np.round(relleno * 255), 0, 255).astype(np.uint8)
+
+
 def limpiar(img):
     mascara = detectar_marcas(img)
-    if METODO == "telea":
-        imagen_limpia = cv2.inpaint(img, mascara.astype(np.uint8), 5, cv2.INPAINT_TELEA)
-    else:
-        relleno = inpaint_biharmonic(img / 255.0, mascara)
-        imagen_limpia = np.clip(np.round(relleno * 255), 0, 255).astype(np.uint8)
-    return imagen_limpia, mascara
+    return rellenar(img, mascara), mascara
