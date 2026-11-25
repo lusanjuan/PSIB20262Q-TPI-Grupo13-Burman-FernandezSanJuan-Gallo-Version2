@@ -6,6 +6,22 @@
 # Se usan las imágenes con lesión (benignas y malignas), limpias de marcas.
 # Se corre desde la carpeta del proyecto:  python3 paso6_clasificador.py
 # Imprime los resultados en la terminal y guarda las figuras en outputs/paso6_clasificador/.
+#
+# Necesita los pasos 1, 2 y 5: usa las imágenes válidas y los grupos de
+# repetidas del paso 1, las imágenes limpias del paso 2 y las segmentaciones
+# del paso 5.
+#
+# Figuras:
+#   01_duplicados.png            correlación de las huellas y % de pares de la misma clase por rango
+#   03_boxplots.png              cada descriptor por clase, A y B
+#   03b_correlacion_descriptores.png  correlación de Spearman entre descriptores, A y B
+#   03c_A_vs_B.png               cada descriptor con la máscara manual contra con nuestra segmentación
+#   04_roc_validacion.png        curvas ROC de A y B
+#   04b_coeficientes.png         peso de cada descriptor en la regresión logística, A y B
+#   04c_matrices_confusion.png   aciertos y errores con el umbral de sensibilidad >= 0,9
+#   05_iou_elipse.png            IoU de las máscaras manuales con su elipse, por clase
+# Tabla:
+#   descriptores.csv             los 5 descriptores de cada imagen, A y B
 
 import os
 
@@ -24,16 +40,16 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve
 
-from comun import armar_tabla, cargar
-from marcas import limpiar
+from comun import armar_tabla, agregar_grupos, cargar_limpia
 from descriptores import huella, mancha_del_clic, descriptores, iou_elipse
 
 CARPETA_SALIDA = "outputs/paso6_clasificador"
 CARPETA_SEGMENTACIONES = "outputs/paso5_segmentacion/segmentaciones"
 os.makedirs(CARPETA_SALIDA, exist_ok=True)
 
-df = armar_tabla()
-df = df[df["clase"] != "normal"].reset_index(drop=True)   # 647 imágenes con lesión
+df = agregar_grupos(armar_tabla())    # sin las imágenes con etiqueta contradictoria (paso 1)
+df = df[df["clase"] != "normal"].reset_index(drop=True)   # imágenes con lesión
+df = df.rename(columns={"grupo": "grupo_paso1"})          # grupos de repetidas del paso 1
 df["maligna"] = (df["clase"] == "malignant").astype(int)
 
 DESCRIPTORES = ["circularidad", "alto/ancho", "ecogenicidad", "sombra", "homogeneidad"]
@@ -63,6 +79,14 @@ def formato_p(p):
     return "p = " + numero(p, 3)
 
 
+def guardar_figura(nombre, dpi=120):
+    """Guarda la figura actual en la carpeta de salida, la cierra e imprime la ruta."""
+    ruta = os.path.join(CARPETA_SALIDA, nombre)
+    plt.savefig(ruta, dpi=dpi)
+    plt.close()
+    print(f"Figura guardada en {ruta}")
+
+
 def sensibilidad_especificidad(y, probabilidad, umbral):
     """Sensibilidad = malignas detectadas / malignas; especificidad = benignas bien dadas / benignas."""
     prediccion = probabilidad >= umbral
@@ -79,21 +103,20 @@ def clasificador():
 
 
 # ---------------------------------------------------------------------------
-# Recorrido de las 647 imágenes: se calcula todo de una vez.
+# Recorrido de las imágenes con lesión: se calcula todo de una vez.
 # - Clic: el mismo que en el paso 5 (el punto más adentro de la máscara manual).
 # - Huella para los duplicados (bloque 1).
 # - Descriptores A (máscara manual) y B (segmentación del paso 5), en los dos
 #   casos con la mancha que contiene el clic (bloque 2).
 # - IoU de la máscara manual con su elipse equivalente (bloque 5).
 # ---------------------------------------------------------------------------
-titulo("Procesando las 647 imágenes (tarda unos minutos)")
+titulo(f"Procesando las {len(df)} imágenes con lesión (tarda unos minutos)")
 
 huellas = []
 filas_A, filas_B, ious = [], [], []
 segmentacion_vacia = []
 for numero_imagen, (_, fila) in enumerate(df.iterrows(), start=1):
-    img, lesion = cargar(fila)
-    limpia, _ = limpiar(img)
+    limpia, lesion = cargar_limpia(fila)     # imagen limpia guardada por el paso 2
     huellas.append(huella(limpia).ravel())
 
     clic = np.unravel_index(np.argmax(ndimage.distance_transform_edt(lesion)), lesion.shape)
@@ -125,6 +148,13 @@ df["iou elipse"] = ious
 # - Correlación de Pearson entre las huellas de todos los pares de imágenes.
 # - Dos imágenes son duplicadas si r >= 0,4, y los grupos se unen en cadena:
 #   si A se parece a B y B a C, las tres van al mismo grupo.
+# - Además se suman los grupos de repetidas del paso 1 (miniaturas de 32x32,
+#   r >= 0,95, revisados a ojo): dos imágenes van juntas si CUALQUIERA de los
+#   dos métodos las junta. Para la validación cruzada conviene juntar de más
+#   (solo achica un poco la cantidad de grupos) antes que separar repetidas
+#   (eso infla el resultado).
+# Figura (01): distribución de r entre todos los pares, con el umbral, y el %
+# de pares de la misma clase en cada rango de r.
 # ---------------------------------------------------------------------------
 titulo("BLOQUE 1. Duplicados")
 
@@ -132,8 +162,12 @@ UMBRAL_DUPLICADO = 0.4
 H = np.array(huellas)
 H = (H - H.mean(axis=1, keepdims=True)) / H.std(axis=1, keepdims=True)
 correlacion = H @ H.T / H.shape[1]           # Pearson entre todos los pares
-duplicadas = correlacion >= UMBRAL_DUPLICADO
+grupo_paso1 = df["grupo_paso1"].to_numpy()
+duplicadas_huella = correlacion >= UMBRAL_DUPLICADO
+duplicadas = duplicadas_huella | (grupo_paso1[:, None] == grupo_paso1[None, :])
 np.fill_diagonal(duplicadas, False)
+np.fill_diagonal(duplicadas_huella, False)
+_, grupos_huella = connected_components(duplicadas_huella, directed=False)
 _, grupos = connected_components(duplicadas, directed=False)
 df["grupo"] = grupos
 
@@ -161,9 +195,40 @@ for desde, hasta, nombre_rango in zip(limites[:-1], limites[1:], nombres_rangos)
 print()
 
 tamanio_grupo = df["grupo"].map(df["grupo"].value_counts())
-print(f"Imágenes con al menos un duplicado (r >= {numero(UMBRAL_DUPLICADO, 1)}): {(tamanio_grupo > 1).sum()}")
+print(f"Imágenes con al menos un duplicado (huella con r >= {numero(UMBRAL_DUPLICADO, 1)}, o paso 1): {(tamanio_grupo > 1).sum()}")
 print(f"Grupos de duplicados (2 o más imágenes): {df.loc[tamanio_grupo > 1, 'grupo'].nunique()}")
 print(f"Grupo más grande: {tamanio_grupo.max()} imágenes")
+print(f"(Solo con la huella: {len(set(grupos_huella))} grupos; solo con el paso 1: {len(set(grupo_paso1))} grupos; "
+      f"juntando los dos: {df['grupo'].nunique()} grupos para {len(df)} imágenes.)")
+
+# 01: r de todos los pares y % de la misma clase por rango
+porcentajes_rango, n_rango = [], []
+for desde, hasta in zip(limites[:-1], limites[1:]):
+    en_rango = (r_pares >= desde) & (r_pares < hasta)
+    porcentajes_rango.append(100 * misma_clase[en_rango].mean() if en_rango.any() else np.nan)
+    n_rango.append(en_rango.sum())
+fig, ejes = plt.subplots(1, 2, figsize=(14, 4.5))
+ejes[0].hist(r_pares, bins=100, color="#5a5a5a")
+ejes[0].axvline(UMBRAL_DUPLICADO, color="tab:red", linestyle="--", label=f"umbral = {numero(UMBRAL_DUPLICADO, 1)}")
+ejes[0].set_yscale("log")
+ejes[0].set_xlabel("Correlación r entre las huellas de dos imágenes")
+ejes[0].set_ylabel("Cantidad de pares (escala log)")
+ejes[0].set_title(f"r entre todos los pares ({len(r_pares)})")
+ejes[0].legend()
+barras = ejes[1].bar(nombres_rangos, porcentajes_rango, color="#2a78b5")
+for barra, n in zip(barras, n_rango):
+    if not np.isnan(barra.get_height()):
+        ejes[1].text(barra.get_x() + barra.get_width() / 2, barra.get_height() + 1, f"n={n}", ha="center", fontsize=8)
+ejes[1].axhline(100 * azar, color="black", linestyle=":", label=f"azar = {numero(100 * azar, 1)} %")
+ejes[1].set_ylim(0, 110)
+ejes[1].set_xlabel("Rango de r")
+ejes[1].set_ylabel("% de pares de la misma clase")
+ejes[1].set_title("Donde los pares son duplicados reales, casi todos son de la misma clase")
+ejes[1].legend(loc="lower right")
+for eje in ejes:
+    eje.spines[["top", "right"]].set_visible(False)
+plt.tight_layout()
+guardar_figura("01_duplicados.png")
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +253,11 @@ B = B[usar].reset_index(drop=True)
 y = datos["maligna"].to_numpy()
 grupos = datos["grupo"].to_numpy()
 
+tabla_descriptores = pd.concat([datos[["id", "clase"]], A.add_prefix("A ").reset_index(drop=True),
+                                B.add_prefix("B ").reset_index(drop=True)], axis=1)
+tabla_descriptores.to_csv(os.path.join(CARPETA_SALIDA, "descriptores.csv"), index=False)
+print(f"Descriptores guardados en {os.path.join(CARPETA_SALIDA, 'descriptores.csv')}")
+
 for nombre, tabla in [("A (máscara manual)", A), ("B (nuestra segmentación)", B)]:
     print(f"\n{nombre}")
     medianas = tabla.groupby(datos["clase"]).median().T
@@ -195,7 +265,7 @@ for nombre, tabla in [("A (máscara manual)", A), ("B (nuestra segmentación)", 
 
 
 # ---------------------------------------------------------------------------
-# BLOQUE 3. Mirar los descriptores (las 646 imágenes).
+# BLOQUE 3. Mirar los descriptores (las imágenes usadas).
 # - AUC benigna/maligna de cada descriptor solo: la probabilidad de que una
 #   maligna al azar tenga un valor más alto que una benigna al azar.
 #   0,5 = no separa; cerca de 1 = más alto en malignas; cerca de 0 = más bajo
@@ -203,6 +273,11 @@ for nombre, tabla in [("A (máscara manual)", A), ("B (nuestra segmentación)", 
 # - Correlación de Spearman entre los 5 (si dos están muy correlacionados,
 #   miden casi lo mismo).
 # - Boxplots por clase (figura 03_boxplots.png).
+# Figuras extra:
+#   03b: la correlación de Spearman como mapa de colores, A y B.
+#   03c: cada descriptor con la máscara manual (A) contra con nuestra
+#        segmentación (B), un punto por imagen. Si caen sobre la diagonal,
+#        nuestra segmentación da el mismo descriptor que la manual.
 # ---------------------------------------------------------------------------
 titulo("BLOQUE 3. AUC de cada descriptor y correlación")
 
@@ -233,11 +308,49 @@ plt.savefig(ruta_figura, dpi=110)
 plt.close()
 print(f"\nFigura guardada en {ruta_figura}")
 
+# 03b: correlación entre descriptores
+fig, ejes = plt.subplots(1, 2, figsize=(13, 5.5))
+for eje, (nombre, tabla) in zip(ejes, [("A (manual)", A), ("B (nuestra)", B)]):
+    rho = tabla[DESCRIPTORES].corr(method="spearman").to_numpy()
+    imagen = eje.imshow(rho, cmap="RdBu_r", vmin=-1, vmax=1)
+    for a in range(len(DESCRIPTORES)):
+        for b in range(len(DESCRIPTORES)):
+            eje.text(b, a, numero(rho[a, b], 2), ha="center", va="center", fontsize=9,
+                     color="white" if abs(rho[a, b]) > 0.6 else "black")
+    eje.set_xticks(range(len(DESCRIPTORES)), DESCRIPTORES, rotation=30, ha="right")
+    eje.set_yticks(range(len(DESCRIPTORES)), DESCRIPTORES if eje is ejes[0] else [])
+    eje.set_title(nombre)
+fig.subplots_adjust(left=0.12, right=0.86, bottom=0.2, wspace=0.05)
+plt.colorbar(imagen, ax=ejes, fraction=0.025, label="ρ de Spearman")
+plt.suptitle("Correlación entre descriptores (cerca de ±1 = miden casi lo mismo)")
+guardar_figura("03b_correlacion_descriptores.png")
+
+# 03c: A contra B, descriptor por descriptor
+COLORES_CLASE = {"benign": "#2a78b5", "malignant": "#c8553d"}
+fig, ejes = plt.subplots(1, 5, figsize=(22, 4.6))
+for eje, d in zip(ejes, DESCRIPTORES):
+    for clase in ["benign", "malignant"]:
+        cuales = (datos["clase"] == clase).to_numpy()
+        eje.scatter(A.loc[cuales, d], B.loc[cuales, d], s=8, alpha=0.5, color=COLORES_CLASE[clase],
+                    edgecolors="none", label=clase)
+    bajo = min(A[d].min(), B[d].min())
+    alto = max(A[d].max(), B[d].max())
+    eje.plot([bajo, alto], [bajo, alto], "k--", linewidth=1)
+    rho_ab = A[d].corr(B[d], method="spearman")
+    eje.set_title(f"{d}  (ρ = {numero(rho_ab, 2)})", fontsize=10)
+    eje.set_xlabel("A (máscara manual)")
+    eje.spines[["top", "right"]].set_visible(False)
+ejes[0].set_ylabel("B (nuestra segmentación)")
+ejes[0].legend(fontsize=8)
+plt.suptitle("Cuánto cambia cada descriptor al usar nuestra segmentación en vez de la manual (diagonal = igual)")
+plt.tight_layout()
+guardar_figura("03c_A_vs_B.png")
+
 
 # ---------------------------------------------------------------------------
 # BLOQUE 4. Clasificador: regresión logística (estandarización + class_weight
 # "balanced"), con los 5 descriptores, para A y para B.
-# Validación cruzada sobre las 646 imágenes: StratifiedGroupKFold de 5
+# Validación cruzada sobre las imágenes usadas: StratifiedGroupKFold de 5
 # pliegues (semilla 13), con los grupos de duplicados (un grupo queda entero
 # en un solo pliegue) y la misma proporción de clases en cada pliegue. Los
 # mismos pliegues para A y para B. En cada pliegue:
@@ -257,6 +370,10 @@ print(f"\nFigura guardada en {ruta_figura}")
 #     positivo = empuja hacia maligna; negativo = hacia benigna).
 # Curva ROC de A y B con las predicciones de los 5 pliegues juntas
 # (figura 04_roc_validacion.png).
+# Figuras extra:
+#   04b: coeficiente de cada descriptor (media ± desvío de los 5 pliegues), A y B.
+#   04c: matrices de confusión con el umbral de sensibilidad >= 0,9, sumando las
+#        predicciones de los 5 pliegues (cada imagen aparece una sola vez).
 # ---------------------------------------------------------------------------
 titulo("BLOQUE 4. Clasificador (regresión logística, validación cruzada de 5 pliegues)")
 
@@ -282,9 +399,12 @@ def media_desvio(valores, decimales=3):
 
 
 probabilidades = {}
+predicciones_90 = {}
+coeficientes_todos = {}
 for nombre, tabla in [("A (manual)", A), ("B (nuestra)", B)]:
     X = tabla[DESCRIPTORES].to_numpy()
     probabilidad = np.zeros(len(y))
+    prediccion_90 = np.zeros(len(y), dtype=bool)
     auc_pliegues, umbrales_pliegues, coeficientes = [], [], []
     sens_05, espec_05, sens_90, espec_90 = [], [], [], []
 
@@ -292,6 +412,7 @@ for nombre, tabla in [("A (manual)", A), ("B (nuestra)", B)]:
         umbral = umbral_sensibilidad_90(X[i_ent], y[i_ent], grupos[i_ent])
         modelo = clasificador().fit(X[i_ent], y[i_ent])
         probabilidad[i_pru] = modelo.predict_proba(X[i_pru])[:, 1]
+        prediccion_90[i_pru] = probabilidad[i_pru] >= umbral
 
         auc_pliegues.append(roc_auc_score(y[i_pru], probabilidad[i_pru]))
         umbrales_pliegues.append(umbral)
@@ -304,7 +425,9 @@ for nombre, tabla in [("A (manual)", A), ("B (nuestra)", B)]:
         espec_90.append(e)
 
     probabilidades[nombre] = probabilidad
+    predicciones_90[nombre] = prediccion_90
     coeficientes = np.array(coeficientes)
+    coeficientes_todos[nombre] = coeficientes
 
     print(f"\n{nombre} (n = {len(y)}, media ± desvío de los 5 pliegues)")
     print(f"  AUC = {media_desvio(auc_pliegues)}")
@@ -333,13 +456,49 @@ plt.savefig(ruta_figura, dpi=120)
 plt.close()
 print(f"\nFigura guardada en {ruta_figura}")
 
+# 04b: coeficientes
+fig, eje = plt.subplots(figsize=(9, 4.5))
+posiciones = np.arange(len(DESCRIPTORES))
+for desplazamiento, (nombre, color) in zip([-0.2, 0.2], [("A (manual)", "tab:green"), ("B (nuestra)", "tab:orange")]):
+    c = coeficientes_todos[nombre]
+    eje.bar(posiciones + desplazamiento, c.mean(axis=0), width=0.4, yerr=c.std(axis=0), capsize=4,
+            color=color, label=nombre)
+eje.axhline(0, color="black", linewidth=1)
+eje.set_xticks(posiciones, DESCRIPTORES)
+eje.set_ylabel("Coeficiente (descriptor estandarizado)")
+eje.set_title("Peso de cada descriptor: + empuja hacia maligna, − hacia benigna (media ± desvío de 5 pliegues)")
+eje.legend()
+eje.spines[["top", "right"]].set_visible(False)
+plt.tight_layout()
+guardar_figura("04b_coeficientes.png")
+
+# 04c: matrices de confusión con el umbral de sensibilidad >= 0,9
+fig, ejes = plt.subplots(1, 2, figsize=(11, 4.8))
+for eje, nombre in zip(ejes, ["A (manual)", "B (nuestra)"]):
+    pred = predicciones_90[nombre]
+    matriz = np.array([[((y == 0) & ~pred).sum(), ((y == 0) & pred).sum()],
+                       [((y == 1) & ~pred).sum(), ((y == 1) & pred).sum()]])
+    eje.imshow(matriz / matriz.sum(axis=1, keepdims=True), cmap="Blues", vmin=0, vmax=1)
+    for a in range(2):
+        for b in range(2):
+            porcentaje = 100 * matriz[a, b] / matriz[a].sum()
+            eje.text(b, a, f"{matriz[a, b]}\n({numero(porcentaje, 1)} %)", ha="center", va="center",
+                     fontsize=12, color="white" if porcentaje > 60 else "black")
+    eje.set_xticks([0, 1], ["dice benigna", "dice maligna"])
+    eje.set_yticks([0, 1], ["es benigna", "es maligna"])
+    eje.set_title(nombre)
+plt.suptitle("Con el umbral de sensibilidad >= 0,9 (5 pliegues juntos; % sobre cada fila)")
+plt.tight_layout()
+guardar_figura("04c_matrices_confusion.png")
+
 # ---------------------------------------------------------------------------
 # BLOQUE 5. Sesgo de las máscaras manuales.
 # Si quien dibujó las máscaras trazó las benignas como óvalos lisos y las
 # malignas con más detalle, la circularidad de A estaría midiendo en parte el
 # dibujo y no la lesión. Lo medimos con el IoU de cada máscara manual (la
 # mancha del clic) con su elipse equivalente: cerca de 1 = casi una elipse.
-# Comparamos benignas y malignas con Mann-Whitney (todas las 647 imágenes).
+# Comparamos benignas y malignas con Mann-Whitney (todas las imágenes con lesión).
+# Figura (05): IoU con la elipse por clase.
 # ---------------------------------------------------------------------------
 titulo("BLOQUE 5. Sesgo de las máscaras: IoU con la elipse equivalente")
 
@@ -350,3 +509,17 @@ print("Test: Mann-Whitney U (dos colas)")
 print(f"  Benignas: n = {len(benignas)}, IoU mediano = {numero(benignas.median(), 3)}")
 print(f"  Malignas: n = {len(malignas)}, IoU mediano = {numero(malignas.median(), 3)}")
 print(f"  {formato_p(p)}")
+
+rng_puntos = np.random.default_rng(0)
+fig, eje = plt.subplots(figsize=(6, 5))
+valores = [benignas.to_numpy(), malignas.to_numpy()]
+eje.boxplot(valores, widths=0.5, showfliers=False, medianprops={"color": "black", "linewidth": 2})
+for k, (clase, v) in enumerate(zip(["benign", "malignant"], valores), start=1):
+    eje.scatter(k + rng_puntos.uniform(-0.18, 0.18, len(v)), v, s=8, alpha=0.45,
+                color=COLORES_CLASE[clase], edgecolors="none")
+eje.set_xticks([1, 2], [f"benign\n(n = {len(benignas)})", f"malignant\n(n = {len(malignas)})"])
+eje.set_ylabel("IoU de la máscara manual con su elipse")
+eje.set_title(f"¿Las máscaras benignas son más 'ovaladas'? ({formato_p(p)})")
+eje.spines[["top", "right"]].set_visible(False)
+plt.tight_layout()
+guardar_figura("05_iou_elipse.png")

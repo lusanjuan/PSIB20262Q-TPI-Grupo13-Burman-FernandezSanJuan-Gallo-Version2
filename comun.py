@@ -100,10 +100,16 @@ def guardar_limpia(fila, imagen):
     Image.fromarray(imagen).save(ruta)
 
 
-def cargar_limpia(fila):
+def cargar_limpia(fila, con_marcas=False):
+    """Devuelve (imagen_limpia, mascara_lesion), como cargar(fila).
+    Con con_marcas=True devuelve además la máscara de las marcas que se
+    rellenaron: son justo los píxeles donde la imagen limpia difiere de la
+    original (el relleno no toca nada fuera de las marcas)."""
     ruta = ruta_limpia(fila)
     if not os.path.exists(ruta):
         raise FileNotFoundError(f"No existe {ruta}: corré primero paso2_marcas.py")
-    _, mascara = cargar(fila)
+    original, mascara = cargar(fila)
     imagen = np.array(Image.open(ruta).convert("L"))
+    if con_marcas:
+        return imagen, mascara, imagen != original
     return imagen, mascara
