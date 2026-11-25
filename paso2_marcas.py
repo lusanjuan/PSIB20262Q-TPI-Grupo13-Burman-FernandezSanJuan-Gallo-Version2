@@ -2,7 +2,7 @@
 # Detectar y borrar las marcas del ecógrafo (cruces de medición, líneas
 # punteadas, números y textos) que vimos en el paso 1.
 # Se corre desde la carpeta del proyecto:  python3 paso2_marcas.py
-# Imprime los resultados en la terminal y guarda las figuras en outputs/paso2/.
+# Imprime los resultados en la terminal y guarda las figuras en outputs/paso2_marcas/.
 
 import os
 
@@ -19,7 +19,7 @@ from comun import CLASES, armar_tabla, cargar
 import marcas
 from marcas import detectar_marcas, limpiar
 
-CARPETA_SALIDA = "outputs/paso2"
+CARPETA_SALIDA = "outputs/paso2_marcas"
 os.makedirs(CARPETA_SALIDA, exist_ok=True)
 
 df = armar_tabla()

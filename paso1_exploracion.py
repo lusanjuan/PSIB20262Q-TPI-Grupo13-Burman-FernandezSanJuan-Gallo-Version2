@@ -1,7 +1,7 @@
 # paso1_exploracion.py
 # Exploración inicial del dataset BUSI (ecografías de mama).
 # Se corre desde la carpeta del proyecto:  python3 paso1_exploracion.py
-# Imprime los resultados en la terminal y guarda las figuras en outputs/paso1/.
+# Imprime los resultados en la terminal y guarda las figuras en outputs/paso1_exploracion/.
 
 import os
 
@@ -16,7 +16,7 @@ from scipy.stats import mannwhitneyu
 
 from comun import CLASES, armar_tabla, cargar
 
-CARPETA_SALIDA = "outputs/paso1"
+CARPETA_SALIDA = "outputs/paso1_exploracion"
 
 os.makedirs(CARPETA_SALIDA, exist_ok=True)
 

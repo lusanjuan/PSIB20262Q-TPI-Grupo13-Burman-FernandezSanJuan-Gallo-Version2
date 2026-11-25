@@ -2,7 +2,7 @@
 # Caracterizar el ruido de las ecografías (speckle): el granulado que aparece
 # aun en tejido homogéneo. Lo medimos en parches de tejido sin lesión ni marcas.
 # Se corre desde la carpeta del proyecto:  python3 paso3_speckle.py
-# Imprime los resultados en la terminal y guarda las figuras en outputs/paso3/.
+# Imprime los resultados en la terminal y guarda las figuras en outputs/paso3_speckle/.
 
 import os
 
@@ -17,7 +17,7 @@ from scipy.stats import gamma
 from comun import armar_tabla, cargar
 from marcas import limpiar
 
-CARPETA_SALIDA = "outputs/paso3"
+CARPETA_SALIDA = "outputs/paso3_speckle"
 os.makedirs(CARPETA_SALIDA, exist_ok=True)
 
 df = armar_tabla()

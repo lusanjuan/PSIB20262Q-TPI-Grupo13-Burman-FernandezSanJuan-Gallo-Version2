@@ -1,0 +1,44 @@
+
+======================================================================
+BLOQUE 1. Lee sobre una imagen de ejemplo
+======================================================================
+Varianza del ruido de benign (209): 53,9
+Figura guardada en outputs/paso4_filtros/01_lee_ejemplo.png
+
+======================================================================
+Procesando las 647 imágenes (puede tardar unos minutos)
+======================================================================
+  100 de 647
+  200 de 647
+  300 de 647
+  400 de 647
+  500 de 647
+  600 de 647
+
+Varianza del ruido usada por Lee (un valor por imagen, n = 647):
+  mínimo 7,1   percentil 25 39,5   mediana 53,8   percentil 75 69,8   máximo 202,9
+
+======================================================================
+BLOQUE 2. Lee vs. sin filtrar
+======================================================================
+a) Ganancia de ENL en 541 parches de tejido: mediana = 1,34  (percentil 25 = 1,18, percentil 75 = 1,77)
+b) Contraste de borde (n = 647 imágenes, Wilcoxon pareado): mediana sin filtrar = 1,254   mediana con Lee = 1,459   p < 0,001
+   Imágenes en que Lee aumenta el contraste de borde: 95,7 %
+c) AUC de textura, lesión vs. tejido de alrededor (n = 647 lesiones y 647 anillos):
+   contraste  de la GLCM: sin filtrar = 0,65   con Lee = 0,641
+   energía    de la GLCM: sin filtrar = 0,862   con Lee = 0,869
+
+======================================================================
+BLOQUE 3. Efecto de Lee (figura)
+======================================================================
+Figura guardada en outputs/paso4_filtros/03_efecto_lee.png
+  sin filtrar  desvío del perfil en el tejido =  21,3   salto del borde = -98,3
+  lee          desvío del perfil en el tejido =  18,2   salto del borde = -97,4
+
+======================================================================
+CONCLUSIÓN
+======================================================================
+- Para segmentar (paso 5): imagen filtrada con Lee.
+- Textura (contraste de la GLCM): AUC sin filtrar = 0,65, con Lee = 0,641 -> conviene medirla sin filtrar.
+- Textura (energía de la GLCM): AUC sin filtrar = 0,862, con Lee = 0,869 -> con Lee separa mejor.
+python3 paso4_filtros.py  58.87s user 4.71s system 97% cpu 1:05.13 total
