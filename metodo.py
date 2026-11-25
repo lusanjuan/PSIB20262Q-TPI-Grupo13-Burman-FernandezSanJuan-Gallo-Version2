@@ -17,18 +17,31 @@ from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score, roc_curve
+from sklearn.metrics import roc_auc_score
 
 from marcas import detectar_marcas, rellenar
 from filtros import filtro_lee, ruido_para_lee, peso_lee
 from segmentacion import segmentar, ventana_alrededor
 from descriptores import descriptores, mancha_del_clic
 
-# Parámetros de la segmentación que eligió el paso 5 (bloque 2, subconjunto de ajuste).
-# Si se vuelve a correr el paso 5 y cambian, actualizarlos acá.
-METODO = "Region growing"
-LADO = 300
-TOLERANCIA = 25
+# Método y parámetros de la segmentación: los que eligió el paso 5 (los lee de
+# outputs/paso5_segmentacion/parametros_elegidos.csv, así siempre coinciden con
+# las segmentaciones con las que el paso 6 entrenó el clasificador).
+RUTA_PARAMETROS = "outputs/paso5_segmentacion/parametros_elegidos.csv"
+if not os.path.exists(RUTA_PARAMETROS):
+    raise FileNotFoundError(f"No existe {RUTA_PARAMETROS}. En tu compu: corré el paso 5. En la versión "
+                            "publicada: subí ese archivo a GitHub con git add -f.")
+_parametros = pd.read_csv(RUTA_PARAMETROS).iloc[0]
+METODO = str(_parametros["metodo"])
+LADO = int(_parametros["ventana"])
+TOLERANCIA = float(_parametros["tolerancia"])
+
+# Umbral de la interfaz: probabilidad >= 0,5 -> maligna. Como la regresión
+# logística se entrena con class_weight="balanced" (benignas y malignas pesan lo
+# mismo), 0,5 es el punto de equilibrio entre sensibilidad y especificidad.
+# (El umbral de sensibilidad >= 0,9 del paso 6 marca como malignas a más de la
+# mitad de las imágenes: sirve para el análisis, no para mostrar un resultado.)
+UMBRAL = 0.5
 
 DESCRIPTORES = ["circularidad", "alto/ancho", "ecogenicidad", "sombra", "homogeneidad"]
 RUTA_DESCRIPTORES = "outputs/paso6_clasificador/descriptores.csv"
@@ -45,8 +58,8 @@ def entrenar():
     """Entrena el clasificador con los descriptores B del paso 6 y estima cómo anda.
     - Validación cruzada agrupada de 5 pliegues (grupos de repetidas del paso 1):
       cada imagen recibe la probabilidad de un modelo que no la vio. Con esas
-      probabilidades se calcula el AUC y se elige el umbral más alto que detecta
-      al menos el 90 % de las malignas (como en el paso 6).
+      probabilidades se calcula el AUC, y la sensibilidad y la especificidad con
+      el umbral UMBRAL.
     - El modelo final se entrena con todas las imágenes.
     Devuelve un diccionario con el modelo, el umbral, las métricas y las
     medianas de cada descriptor por clase (para comparar en la interfaz)."""
@@ -65,8 +78,7 @@ def entrenar():
     validacion = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=SEMILLA)
     for i_ent, i_pru in validacion.split(X, y, groups=grupos):
         probabilidad[i_pru] = clasificador().fit(X[i_ent], y[i_ent]).predict_proba(X[i_pru])[:, 1]
-    _, sensibilidades, umbrales = roc_curve(y, probabilidad)
-    umbral = umbrales[sensibilidades >= 0.90].max()
+    umbral = UMBRAL
     prediccion = probabilidad >= umbral
 
     referencia = {clase: {d: tabla.loc[tabla["clase"] == clase, "B " + d].median() for d in DESCRIPTORES}

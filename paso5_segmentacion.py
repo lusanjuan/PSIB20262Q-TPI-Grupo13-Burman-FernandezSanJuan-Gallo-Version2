@@ -23,6 +23,7 @@
 # Tablas:
 #   dice_todos.csv               Dice de cada imagen, método y parámetros
 #   tabla_evaluacion.csv         resumen por método en evaluación
+#   parametros_elegidos.csv      el mejor método y sus parámetros (los usa la interfaz)
 
 import os
 
@@ -235,24 +236,45 @@ resultados = resultados.merge(df[["id", "subconjunto"]], on="id")
 # ---------------------------------------------------------------------------
 # BLOQUE 2. Ajuste de parámetros (SOLO con el subconjunto de ajuste).
 # Para cada método probamos ventanas de 150, 200 y 300 px y, en el region
-# growing, tolerancias de 15 a 35 niveles de gris. Elegimos la combinación
-# con mayor Dice medio en las imágenes de ajuste.
+# growing, tolerancias de 15 a 35 niveles de gris.
+# Regla de elección: entre las combinaciones cuyo Dice medio en ajuste queda a
+# menos de 0,01 del mejor (empatadas en la práctica), elegimos la que tiene
+# MENOS fracasos (% de imágenes con Dice < 0,4). Un fracaso suele ser una fuga:
+# la región se derrama al tejido de alrededor. Así, entre dos combinaciones que
+# en promedio andan igual, se prefiere la más robusta (por ejemplo, una ventana
+# más chica, que frena las fugas).
 # (La tolerancia vale 0 en los métodos que no la usan.)
 # Figura (02): Dice medio en ajuste según la ventana, para cada método; para
 # los que usan tolerancia, una línea por tolerancia. El punto elegido va marcado.
 # ---------------------------------------------------------------------------
 titulo("BLOQUE 2. Ajuste de parámetros (subconjunto de ajuste)")
 
+EMPATE = 0.01          # diferencias de Dice medio menores a esto se consideran empate
+UMBRAL_FRACASO = 0.4   # Dice < 0,4 = fracaso (casi siempre, una fuga)
+
 ajuste = resultados[resultados["subconjunto"] == "ajuste"]
-promedios = ajuste.groupby(["metodo", "ventana", "tolerancia"])["dice"].mean().reset_index()
-elegidos = promedios.loc[promedios.groupby("metodo")["dice"].idxmax()].set_index("metodo")
+promedios = (ajuste.groupby(["metodo", "ventana", "tolerancia"])["dice"]
+             .agg(dice="mean", fracasos=lambda v: 100 * (v < UMBRAL_FRACASO).mean())
+             .reset_index())
+filas_elegidas = []
+for metodo in METODOS:
+    del_metodo = promedios[promedios["metodo"] == metodo]
+    candidatos = del_metodo[del_metodo["dice"] >= del_metodo["dice"].max() - EMPATE]
+    filas_elegidas.append(candidatos.sort_values(["fracasos", "dice"], ascending=[True, False]).iloc[0])
+elegidos = pd.DataFrame(filas_elegidas).set_index("metodo")
 
 print(f"Imágenes de ajuste: {ajuste['id'].nunique()}")
 for metodo in METODOS:
+    del_metodo = promedios[promedios["metodo"] == metodo]
+    candidatos = del_metodo[del_metodo["dice"] >= del_metodo["dice"].max() - EMPATE]
+    print(f"  {metodo}: combinaciones empatadas (Dice medio a menos de {numero(EMPATE, 2)} del mejor):")
+    for _, c in candidatos.sort_values("dice", ascending=False).iterrows():
+        texto_tolerancia = f", tolerancia {int(c['tolerancia'])}" if metodo in USA_TOLERANCIA else ""
+        print(f"     ventana {int(c['ventana'])} px{texto_tolerancia}: Dice medio = {numero(c['dice'], 3)}, "
+              f"fracasos (Dice < {numero(UMBRAL_FRACASO, 1)}) = {numero(c['fracasos'], 1)} %")
     e = elegidos.loc[metodo]
     texto_tolerancia = f", tolerancia {int(e['tolerancia'])}" if metodo in USA_TOLERANCIA else ""
-    print(f"  {metodo:18s} ventana {int(e['ventana'])} px{texto_tolerancia}   "
-          f"(Dice medio en ajuste = {numero(e['dice'], 3)})")
+    print(f"     -> elegida: ventana {int(e['ventana'])} px{texto_tolerancia} (la de menos fracasos)")
 
 fig, ejes = plt.subplots(1, len(METODOS), figsize=(5 * len(METODOS), 4.5), sharey=True, squeeze=False)
 for eje, metodo in zip(ejes[0], METODOS):
@@ -417,6 +439,9 @@ titulo(f"BLOQUE 5. Segmentaciones del mejor método ({mejor})")
 
 lado = int(elegidos.loc[mejor, "ventana"])
 tolerancia = elegidos.loc[mejor, "tolerancia"]
+ruta_parametros = os.path.join(CARPETA_SALIDA, "parametros_elegidos.csv")
+pd.DataFrame([{"metodo": mejor, "ventana": lado, "tolerancia": tolerancia}]).to_csv(ruta_parametros, index=False)
+print(f"Método y parámetros guardados en {ruta_parametros} (los usa la interfaz)")
 para_figura = {}
 ids_figura = list(ordenadas.index[-3:][::-1]) + list(ordenadas.index[:3])
 

@@ -165,7 +165,7 @@ st.markdown("""
 .marca {position: absolute; top: -5px; width: 4px; height: 22px; background: #1E293B; border-radius: 2px;}
 .umbral {position: absolute; top: -3px; width: 2px; height: 18px; background: #64748B;}
 .escala {display: flex; justify-content: space-between; font-size: .78rem; opacity: .75;}
-.dato {background: #F1F5F9; border-radius: 12px; padding: .8rem 1rem; height: 100%;}
+.dato {background: #F1F5F9; color: #0F172A; border-radius: 12px; padding: .8rem 1rem; height: 100%;}
 .dato b {font-size: 1.5rem;}
 .leyenda span {display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin: 0 .3rem 0 .8rem; vertical-align: -1px;}
 </style>
@@ -234,8 +234,8 @@ with st.sidebar:
     st.divider()
     st.caption(f"**Qué tan bien anda:** en {m['lesiones']} lesiones de BUSI (validación cruzada agrupada) detecta "
                f"el {100 * m['sensibilidad']:.0f} % de las malignas y da bien el {100 * m['especificidad']:.0f} % "
-               f"de las benignas (AUC {m['auc']:.2f}). El umbral se eligió para no dejar pasar malignas, a costa "
-               "de más falsas alarmas. El resultado cambia según dónde se haga clic, y supone que hay una lesión. "
+               f"de las benignas (AUC {m['auc']:.2f}). El resultado cambia según dónde se haga clic, y supone que hay "
+               "una lesión. "
                "Es una herramienta de apoyo, **no un diagnóstico**.")
 
 # la semilla guardada solo vale para la imagen en la que se marcó
@@ -305,7 +305,7 @@ with col_resultado:
                    f'del contorno</div>', unsafe_allow_html=True)
         st.caption("**Coincidencia con el radiólogo** (coeficiente de Dice): cuánto se superpone nuestra segmentación "
                    "(verde) con el contorno que dibujó el médico (amarillo). 100 % = idénticas, 0 % = no se tocan. "
-                   "En promedio el método logra ~64 %.")
+                   "En promedio el método logra alrededor de 65 %.")
 
     zona = recorte(mascara, img.shape)
     vista = a_rgb(resultado["imagen_limpia"])
@@ -373,7 +373,7 @@ with tab_como:
    La varianza del ruido se midió en el paso 3 en parches de tejido homogéneo.
 3. **Segmentación** (paso 5): crecimiento de regiones desde el clic sobre la imagen con Lee, tolerancia
    {metodo.TOLERANCIA} niveles de gris, dentro de una ventana de {metodo.LADO} px alrededor del clic, y refinamiento
-   morfológico. En BUSI da Dice 0,64 en promedio.
+   morfológico. En BUSI da Dice de alrededor de 0,65 en promedio.
 4. **Descriptores y clasificación** (paso 6): 5 descriptores y una regresión logística entrenada con las lesiones de
    BUSI segmentadas de la misma forma. Con validación cruzada agrupada: AUC {m['auc']:.2f}, sensibilidad
    {m['sensibilidad']:.2f}, especificidad {m['especificidad']:.2f}.
