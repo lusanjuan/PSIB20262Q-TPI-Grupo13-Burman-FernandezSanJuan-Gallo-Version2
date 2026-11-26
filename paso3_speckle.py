@@ -26,7 +26,7 @@ import matplotlib
 matplotlib.use("Agg")  # no abrir ventanas: solo guardar archivos
 import matplotlib.pyplot as plt
 from scipy import ndimage
-from scipy.stats import gamma, expon
+from scipy.stats import gamma, expon, spearmanr
 
 from comun import armar_tabla, agregar_grupos, cargar_limpia
 
@@ -386,6 +386,36 @@ ruta_txt = os.path.join(CARPETA_SALIDA, "varianza_ruido.txt")
 with open(ruta_txt, "w") as archivo:
     archivo.write(f"{varianza_ruido:.4f}\n")
 print(f"Guardada en {ruta_txt}")
+
+# ¿Tendría sentido un nivel de ruido distinto para cada imagen?
+#   a) Para estimarlo hace falta tejido homogéneo de esa imagen: ¿cuántas
+#      imágenes tienen 0, 1 o 2 o más parches homogéneos?
+#   b) Correlación intraclase ICC(1), en las imágenes con 2 parches o más:
+#      qué fracción de la variación de la varianza del ruido (7x7) se debe a
+#      diferencias ENTRE imágenes (1 = todo es la imagen; 0 = nada).
+#   c) Spearman entre la varianza del ruido y la media del parche: si el
+#      ruido depende del brillo de la zona.
+ids_parches = pd.Series([posicion[0] for posicion in posiciones_elegidas])
+por_imagen = ids_parches.value_counts().reindex(df["id"], fill_value=0)
+print(f"\nImágenes sin ningún parche homogéneo: {(por_imagen == 0).sum()} de {len(df)} "
+      f"({numero(100 * (por_imagen == 0).mean(), 1)} %); con uno solo: {(por_imagen == 1).sum()}; "
+      f"con 2 o más: {(por_imagen >= 2).sum()}")
+
+tabla_ruido = pd.DataFrame({"id": ids_parches, "varianza": varianzas_7, "media": medias})
+varias = tabla_ruido[tabla_ruido["id"].map(por_imagen) >= 2]
+grupos = varias.groupby("id")["varianza"]
+k, N = grupos.ngroups, len(varias)
+n0 = (N - (grupos.size() ** 2).sum() / N) / (k - 1)                       # parches por imagen (promedio ajustado)
+entre = (grupos.size() * (grupos.mean() - varias["varianza"].mean()) ** 2).sum() / (k - 1)
+dentro = ((varias["varianza"] - grupos.transform("mean")) ** 2).sum() / (N - k)
+icc = (entre - dentro) / (entre + (n0 - 1) * dentro)
+print(f"Correlación intraclase ICC(1) de la varianza del ruido ({k} imágenes, {N} parches): {numero(icc, 2)}")
+
+rho, p = spearmanr(tabla_ruido["varianza"], tabla_ruido["media"])
+texto_p = "p < 0,001" if p < 0.001 else f"p = {numero(p, 3)}"
+print(f"Spearman entre la varianza del ruido y la media del parche: {numero(rho, 2)} "
+      f"(n = {len(tabla_ruido)}, {texto_p})")
+print("  -> Por eso se usa un único valor para todas las imágenes (ver informe).")
 
 fig, eje = plt.subplots(figsize=(8, 4.5))
 bordes = np.linspace(0, np.percentile(varianzas_32, 98), 60)

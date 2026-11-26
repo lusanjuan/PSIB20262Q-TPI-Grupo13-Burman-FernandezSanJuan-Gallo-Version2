@@ -35,6 +35,7 @@ import matplotlib.pyplot as plt
 import cv2
 from skimage.morphology import disk, opening, dilation
 from skimage.restoration import inpaint_biharmonic
+from skimage.measure import label, regionprops
 from scipy.stats import wilcoxon
 
 from comun import CLASES, armar_tabla, cargar, agregar_grupos, ruta_limpia, guardar_limpia, cargar_limpia
@@ -172,7 +173,7 @@ FILA, X_INICIO, X_FIN = 227, 280, 297
 print(f'Perfil de grises de "malignant (12)", fila {FILA}, columnas {X_INICIO} a {X_FIN - 1}:')
 print("  columna: " + " ".join(f"{x:4d}" for x in range(X_INICIO, X_FIN)))
 print("  gris:    " + " ".join(f"{v:4d}" for v in img12[FILA, X_INICIO:X_FIN]))
-print("  -> La marca vale ~215–231 (no 255) y el tejido de al lado ~70–130.")
+print("  -> La marca vale ~225–231 (no 255) y el tejido de al lado ~70–130.")
 print("     Entre medio hay un borde suave (~155) que también es parte de la marca.")
 
 print(f"\nImágenes con tejido >= 250 (fuera de las marcas): {df['tejido_250'].sum()} de {len(df)}")
@@ -209,6 +210,22 @@ print(f"Píxeles de tejido con top-hat >= {marcas.UMBRAL_TOPHAT}: "
       f"{numero(100 * (1 - acumulado[marcas.UMBRAL_TOPHAT - 1]), 3)} %")
 print(f"  -> Umbral = {marcas.UMBRAL_TOPHAT}: por encima de casi todo el tejido y por debajo de las marcas.")
 print("     Lo poco de tejido que pasa el umbral son fibras finas, que se descartan por forma.")
+
+# Cuántos objetos candidatos (top-hat >= umbral) se descartan como fibras, con
+# las mismas reglas de forma que detectar_marcas (marcas.py), en las 761 imágenes.
+candidatos_total, fibras_total = 0, 0
+for _, fila in df.iterrows():
+    imagen, _ = cargar(fila)
+    for objeto in regionprops(label(tophat_blanco(imagen) >= marcas.UMBRAL_TOPHAT)):
+        candidatos_total += 1
+        largo = objeto.axis_major_length
+        elongacion = largo / max(objeto.axis_minor_length, 1)
+        inclinacion = 90 - abs(np.degrees(objeto.orientation))
+        if (elongacion >= marcas.FIBRA_ELONGACION and largo >= marcas.FIBRA_LARGO
+                and inclinacion <= marcas.FIBRA_INCLINACION):
+            fibras_total += 1
+print(f"\nObjetos candidatos (top-hat >= {marcas.UMBRAL_TOPHAT}) en las {len(df)} imágenes: {candidatos_total}")
+print(f"Descartados como fibras: {fibras_total} ({numero(100 * fibras_total / candidatos_total, 1)} %)")
 
 # 01: perfil de grises y top-hat
 columnas = np.arange(X_INICIO, X_FIN)
